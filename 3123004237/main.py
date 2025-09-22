@@ -10,7 +10,7 @@ from collections import Counter
 import argparse
 import sys
 import os
-from typing import List, Set, Dict, Tuple, Optional
+from typing import List
 
 # 第三方库导入
 import jieba
@@ -31,7 +31,6 @@ def read_file(file_path: str) -> str:
         IOError: 文件读取错误时抛出
         UnicodeDecodeError: 编码错误时抛出
     """
-    # 检查文件是否存在
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"文件不存在: {file_path}")
 
@@ -50,13 +49,13 @@ def read_file(file_path: str) -> str:
             continue
         except PermissionError as exc:
             raise PermissionError(f"没有权限读取文件: {file_path}") from exc
-        except Exception as exc:
-            # 如果是最后一次尝试，抛出异常
+        except OSError as exc:
+            # 最后一次尝试仍失败，抛出明确异常
             if encoding == encodings[-1]:
                 raise IOError(f"无法读取文件: {file_path}") from exc
             continue
 
-    raise UnicodeDecodeError(f"无法解码文件: {file_path}")
+    raise UnicodeDecodeError("utf-8", b"", 0, 0, f"无法解码文件: {file_path}")
 
 
 def write_file(file_path: str, content: str) -> None:
@@ -71,15 +70,11 @@ def write_file(file_path: str, content: str) -> None:
         IOError: 文件写入错误时抛出
     """
     try:
-        # 获取文件所在目录
         directory = os.path.dirname(file_path)
-
-        # 如果目录不存在且不为空，则创建目录
         if directory and not os.path.exists(directory):
             os.makedirs(directory, exist_ok=True)
             print(f"创建目录: {directory}")
 
-        # 写入文件
         with open(file_path, 'w', encoding='utf-8') as file:
             file.write(content)
         print(f"文件已成功写入: {file_path}")
@@ -102,17 +97,13 @@ def preprocess_text(text: str) -> List[str]:
     Returns:
         处理后的词汇列表
     """
-    # 停用词集合
     stopwords = {
         '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一',
         '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着',
         '没有', '看', '好', '自己', '这'
     }
 
-    # 使用jieba分词
     words = jieba.cut(text)
-
-    # 过滤停用词和空白字符
     return [word for word in words if word.strip() and word not in stopwords]
 
 
