@@ -10,7 +10,7 @@ from collections import Counter
 import argparse
 import sys
 import os
-from typing import List
+from typing import List, Dict, Any
 
 # 第三方库导入
 import jieba
@@ -19,17 +19,6 @@ import jieba
 def read_file(file_path: str) -> str:
     """
     读取文件内容，尝试多种编码格式
-
-    Args:
-        file_path: 文件路径
-
-    Returns:
-        文件内容字符串
-
-    Raises:
-        FileNotFoundError: 文件不存在时抛出
-        IOError: 文件读取错误时抛出
-        UnicodeDecodeError: 编码错误时抛出
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"文件不存在: {file_path}")
@@ -50,7 +39,6 @@ def read_file(file_path: str) -> str:
         except PermissionError as exc:
             raise PermissionError(f"没有权限读取文件: {file_path}") from exc
         except OSError as exc:
-            # 最后一次尝试仍失败，抛出明确异常
             if encoding == encodings[-1]:
                 raise IOError(f"无法读取文件: {file_path}") from exc
             continue
@@ -61,13 +49,6 @@ def read_file(file_path: str) -> str:
 def write_file(file_path: str, content: str) -> None:
     """
     写入文件内容
-
-    Args:
-        file_path: 文件路径
-        content: 要写入的内容
-
-    Raises:
-        IOError: 文件写入错误时抛出
     """
     try:
         directory = os.path.dirname(file_path)
@@ -90,12 +71,6 @@ def write_file(file_path: str, content: str) -> None:
 def preprocess_text(text: str) -> List[str]:
     """
     文本预处理：分词并过滤停用词
-
-    Args:
-        text: 输入文本
-
-    Returns:
-        处理后的词汇列表
     """
     stopwords = {
         '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一',
@@ -107,155 +82,135 @@ def preprocess_text(text: str) -> List[str]:
     return [word for word in words if word.strip() and word not in stopwords]
 
 
+def get_text_representation(text: str) -> Dict[str, Any]:
+    """
+    获取文本的多种表示形式，避免重复分词
+    """
+    words = preprocess_text(text)
+    counter = Counter(words)
+    word_set = set(words)
+
+    return {
+        'words': words,  # 原始词列表（保持顺序和重复）
+        'counter': counter,  # 词频计数器
+        'word_set': word_set,  # 词集合（去重）
+        'length': len(words)  # 文本长度
+    }
+
+
 def cosine_similarity_numpy(text1: str, text2: str) -> float:
     """
     使用NumPy优化计算两段文本的余弦相似度
-
-    Args:
-        text1: 第一段文本
-        text2: 第二段文本
-
-    Returns:
-        余弦相似度值 (0-1之间)
     """
-    # 延迟导入NumPy以避免不必要的依赖
-    try:
-        import numpy as np  # pylint: disable=import-outside-toplevel,reimported
-    except ImportError:
-        print("警告: NumPy未安装，使用原生Python计算余弦相似度")
-        return cosine_similarity_fallback(text1, text2)
+    # 获取文本表示
+    rep1 = get_text_representation(text1)
+    rep2 = get_text_representation(text2)
 
-    # 预处理文本
-    words1 = preprocess_text(text1)
-    words2 = preprocess_text(text2)
-
-    if not words1 or not words2:
+    if not rep1['words'] or not rep2['words']:
         return 0.0
 
-    # 创建词频计数器
-    counter1 = Counter(words1)
-    counter2 = Counter(words2)
+    # 延迟导入NumPy
+    try:
+        import numpy as np
+    except ImportError:
+        print("警告: NumPy未安装，使用原生Python计算余弦相似度")
+        return cosine_similarity_fallback_with_reps(rep1, rep2)
 
     # 获取所有词汇的并集
-    all_words = list(set(counter1.keys()).union(set(counter2.keys())))
+    all_words = list(set(rep1['counter'].keys()).union(set(rep2['counter'].keys())))
 
     # 创建词频向量
-    vector1 = np.array([counter1.get(word, 0) for word in all_words],
-                       dtype=np.float32)
-    vector2 = np.array([counter2.get(word, 0) for word in all_words],
-                       dtype=np.float32)
+    vector1 = np.array([rep1['counter'].get(word, 0) for word in all_words], dtype=np.float32)
+    vector2 = np.array([rep2['counter'].get(word, 0) for word in all_words], dtype=np.float32)
 
-    # 计算点积
+    # 计算余弦相似度
     dot_product = np.dot(vector1, vector2)
-
-    # 计算模长
     magnitude1 = np.linalg.norm(vector1)
     magnitude2 = np.linalg.norm(vector2)
 
-    # 避免除以零
     if magnitude1 * magnitude2 == 0:
         return 0.0
 
-    # 计算余弦相似度
     return float(dot_product / (magnitude1 * magnitude2))
 
 
 def cosine_similarity_fallback(text1: str, text2: str) -> float:
     """
     回退方案：使用原生Python计算余弦相似度
-
-    Args:
-        text1: 第一段文本
-        text2: 第二段文本
-
-    Returns:
-        余弦相似度值 (0-1之间)
     """
-    words1 = preprocess_text(text1)
-    words2 = preprocess_text(text2)
+    rep1 = get_text_representation(text1)
+    rep2 = get_text_representation(text2)
+    return cosine_similarity_fallback_with_reps(rep1, rep2)
 
-    if not words1 or not words2:
+
+def cosine_similarity_fallback_with_reps(rep1: Dict[str, Any], rep2: Dict[str, Any]) -> float:
+    """
+    使用原生Python计算余弦相似度（基于文本表示）
+    """
+    if not rep1['words'] or not rep2['words']:
         return 0.0
 
-    # 创建词频计数器
-    counter1 = Counter(words1)
-    counter2 = Counter(words2)
+    all_words = set(rep1['counter'].keys()).union(set(rep2['counter'].keys()))
 
-    # 获取所有词汇的并集
-    all_words = set(counter1.keys()).union(set(counter2.keys()))
+    vector1 = [rep1['counter'].get(word, 0) for word in all_words]
+    vector2 = [rep2['counter'].get(word, 0) for word in all_words]
 
-    # 创建词频向量
-    vector1 = [counter1.get(word, 0) for word in all_words]
-    vector2 = [counter2.get(word, 0) for word in all_words]
-
-    # 计算点积
     dot_product = sum(v1 * v2 for v1, v2 in zip(vector1, vector2))
-
-    # 计算模长
     magnitude1 = math.sqrt(sum(v * v for v in vector1))
     magnitude2 = math.sqrt(sum(v * v for v in vector2))
 
-    # 避免除以零
     if magnitude1 * magnitude2 == 0:
         return 0.0
 
-    # 计算余弦相似度
     return dot_product / (magnitude1 * magnitude2)
 
 
 def jaccard_similarity(text1: str, text2: str) -> float:
     """
     计算两段文本的Jaccard相似度
-
-    Args:
-        text1: 第一段文本
-        text2: 第二段文本
-
-    Returns:
-        Jaccard相似度值 (0-1之间)
     """
-    words1 = set(preprocess_text(text1))
-    words2 = set(preprocess_text(text2))
+    rep1 = get_text_representation(text1)
+    rep2 = get_text_representation(text2)
+    return jaccard_similarity_with_reps(rep1, rep2)
 
-    if not words1 or not words2:
+
+def jaccard_similarity_with_reps(rep1: Dict[str, Any], rep2: Dict[str, Any]) -> float:
+    """
+    基于文本表示计算Jaccard相似度
+    """
+    if not rep1['word_set'] or not rep2['word_set']:
         return 0.0
 
-    intersection = len(words1.intersection(words2))
-    union = len(words1.union(words2))
+    intersection = len(rep1['word_set'].intersection(rep2['word_set']))
+    union = len(rep1['word_set'].union(rep2['word_set']))
 
     return intersection / union if union != 0 else 0.0
 
 
 def weighted_jaccard_similarity(text1: str, text2: str) -> float:
     """
-    计算改进的加权Jaccard相似度，结合词频权重
-
-    Args:
-        text1: 第一段文本
-        text2: 第二段文本
-
-    Returns:
-        加权Jaccard相似度值 (0-1之间)
+    计算改进的加权Jaccard相似度
     """
-    words1 = preprocess_text(text1)
-    words2 = preprocess_text(text2)
+    rep1 = get_text_representation(text1)
+    rep2 = get_text_representation(text2)
+    return weighted_jaccard_similarity_with_reps(rep1, rep2)
 
-    if not words1 or not words2:
+
+def weighted_jaccard_similarity_with_reps(rep1: Dict[str, Any], rep2: Dict[str, Any]) -> float:
+    """
+    基于文本表示计算加权Jaccard相似度
+    """
+    if not rep1['counter'] or not rep2['counter']:
         return 0.0
 
-    counter1 = Counter(words1)
-    counter2 = Counter(words2)
+    all_words = set(rep1['counter'].keys()).union(set(rep2['counter'].keys()))
 
-    # 计算所有词的并集
-    all_words = set(counter1.keys()).union(set(counter2.keys()))
-
-    # 计算最小权重和与最大权重和
     min_sum = 0
     max_sum = 0
 
     for word in all_words:
-        count1 = counter1.get(word, 0)
-        count2 = counter2.get(word, 0)
+        count1 = rep1['counter'].get(word, 0)
+        count2 = rep2['counter'].get(word, 0)
         min_sum += min(count1, count2)
         max_sum += max(count1, count2)
 
@@ -265,22 +220,21 @@ def weighted_jaccard_similarity(text1: str, text2: str) -> float:
 def word_overlap_similarity(text1: str, text2: str) -> float:
     """
     计算基于词汇重叠的相似度
-
-    Args:
-        text1: 第一段文本
-        text2: 第二段文本
-
-    Returns:
-        词汇重叠相似度值 (0-1之间)
     """
-    words1 = set(preprocess_text(text1))
-    words2 = set(preprocess_text(text2))
+    rep1 = get_text_representation(text1)
+    rep2 = get_text_representation(text2)
+    return word_overlap_similarity_with_reps(rep1, rep2)
 
-    if not words1 or not words2:
+
+def word_overlap_similarity_with_reps(rep1: Dict[str, Any], rep2: Dict[str, Any]) -> float:
+    """
+    基于文本表示计算词汇重叠相似度
+    """
+    if not rep1['word_set'] or not rep2['word_set']:
         return 0.0
 
-    intersection = len(words1.intersection(words2))
-    min_length = min(len(words1), len(words2))
+    intersection = len(rep1['word_set'].intersection(rep2['word_set']))
+    min_length = min(len(rep1['word_set']), len(rep2['word_set']))
 
     return intersection / min_length if min_length != 0 else 0.0
 
@@ -288,30 +242,28 @@ def word_overlap_similarity(text1: str, text2: str) -> float:
 def calculate_combined_similarity(text1: str, text2: str) -> float:
     """
     综合多种相似度算法计算最终相似度
-
-    Args:
-        text1: 第一段文本
-        text2: 第二段文本
-
-    Returns:
-        综合相似度值 (0-1之间)
     """
-    # 计算各种相似度
-    cosine_sim = cosine_similarity_numpy(text1, text2)
-    jaccard_sim = jaccard_similarity(text1, text2)
-    weighted_jaccard_sim = weighted_jaccard_similarity(text1, text2)
-    overlap_sim = word_overlap_similarity(text1, text2)
+    # 获取文本表示
+    rep1 = get_text_representation(text1)
+    rep2 = get_text_representation(text2)
 
-    # 动态权重调整（根据文本长度）
-    words1 = preprocess_text(text1)
-    words2 = preprocess_text(text2)
-    text_length = min(len(words1), len(words2))
+    if not rep1['words'] or not rep2['words']:
+        return 0.0
 
-    # 短文本更适合Jaccard，长文本更适合余弦相似度
+    # 使用原有的计算方式，但基于预处理的文本表示
+    cosine_sim = cosine_similarity_fallback_with_reps(rep1, rep2)
+    jaccard_sim = jaccard_similarity_with_reps(rep1, rep2)
+    weighted_jaccard_sim = weighted_jaccard_similarity_with_reps(rep1, rep2)
+    overlap_sim = word_overlap_similarity_with_reps(rep1, rep2)
+
+    # 使用原有的权重分配策略
+    text_length = min(rep1['length'], rep2['length'])
+
+    # 保持原有的权重分配
     if text_length < 50:
-        weights = [0.2, 0.3, 0.3, 0.2]  # 偏向Jaccard
+        weights = [0.2, 0.3, 0.3, 0.2]
     else:
-        weights = [0.4, 0.2, 0.2, 0.2]  # 偏向余弦相似度
+        weights = [0.4, 0.2, 0.2, 0.2]
 
     # 计算加权平均
     combined_sim = (cosine_sim * weights[0] +
@@ -373,7 +325,7 @@ def main() -> None:
     except (FileNotFoundError, PermissionError, UnicodeDecodeError) as exc:
         print(f"错误: {exc}")
         sys.exit(1)
-    except Exception as exc:  # pylint: disable=broad-except
+    except Exception as exc:
         print(f"程序执行错误: {exc}")
         sys.exit(1)
 
